@@ -1,0 +1,80 @@
+pipeline {
+    agent any
+    tools{
+        maven 'maven3'
+        jdk 'jdk17'
+    }
+    environment {
+        SCANNER_HOME= tool 'sonar-scanner'
+    }
+    stages {
+        stage('Git Checkout') {
+            steps {
+                git branch: 'main', url: 'https://github.com/krishnaGajabi/Ekart.git'
+            }
+        }
+        stage('Compile') {
+            steps {
+                sh "mvn compile"
+            }
+        }
+        stage('Unit Tests') {
+            steps {
+                sh "mvn test -DskipTests=true"
+            }
+        }
+        stage('Sonarqube Analysis') {
+            steps {withSonarQubeEnv('sonar') {
+               sh '''$SCANNER_HOME/bin/sonar-scanner -Dsonar.projectKey=EKART -Dsonar.projectName=EKART \
+               -Dsonar.java.binaries=.'''
+               }
+            }
+        }
+        stage('OWASP Dependency Check') {
+            steps {
+                dependencyCheck additionalArguments: ' --scan ./', odcInstallation: 'DC'
+                dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+            }
+        }
+        stage('Build') {
+            steps {
+                sh "mvn package -DskipTests=true"
+            }
+        }
+        stage('Deploy to Nexus') {
+            steps {
+                 withMaven(globalMavenSettingsConfig: 'golab-maven', jdk: 'jdk17', maven: 'maven3', mavenSettingsConfig: '', traceability: true) {
+                sh "mvn deploy -DskipTests=true"
+}
+            }
+        }
+        stage('Build and Tag Docker Image') {
+            steps {
+                withDockerRegistry(credentialsId: 'docker-creds', url: 'https://index.docker.io/v1/') {
+                  sh "docker build -t krishnagajabi/ekart:latest -f docker/Dockerfile ."
+                  }
+            }
+        }
+        stage('Trivy Scan') {
+            steps {
+                sh "trivy image krishnagajabi/ekart:latest > trivyreport.txt "
+}
+            }
+        stage('Docker push and Tag image') {
+            steps {
+                script {
+                    withDockerRegistry(credentialsId: 'docker-creds', url: 'https://index.docker.io/v1/') {
+                  sh "docker push krishnagajabi/ekart:latest"
+                                                                      }
+                       }
+                  }
+}
+        stage('Deploy to K8') {
+            steps {
+               withKubeConfig(caCertificate: '', clusterName: '', contextName: '', credentialsId: 'k8token', namespace: 'webapps', restrictKubeConfigAccess: false, serverUrl: 'https://172.31.85.28:6443') {
+                      sh "kubectl apply -f deploymentservice.yml -n webapps"
+                  }
+            }
+}
+}
+}
